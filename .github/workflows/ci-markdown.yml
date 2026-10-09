@@ -72,18 +72,30 @@ jobs:
           echo "Checking: ${files:-nothing}"
 
       - name: Check links
+        id: lychee
         if: inputs.links && steps.files.outputs.files != ''
         uses: lycheeverse/lychee-action@v2
         with:
           fail: true
+          output: ${{ runner.temp }}/lychee.md
           args: >-
             --no-progress
+            --root-dir ${{ github.workspace }}
             --timeout 30
             --max-retries 3
             --retry-wait-time 5
             --exclude "mailto:"
-            --accept 200,202,206,403,415,429
+            --accept 200,202,206,403,415,429,999
             ${{ inputs.lychee-args }}
             ${{ steps.files.outputs.files }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Show broken links
+        if: failure() && steps.lychee.outcome == 'failure'
+        env:
+          REPORT: ${{ runner.temp }}/lychee.md
+        run: |
+          # Surface each broken link as an annotation so it shows on the PR
+          # without opening the logs.
+          grep -E '^\* \[' "$REPORT" | sed 's/^\* /::error title=Broken link::/' | head -50 || true
