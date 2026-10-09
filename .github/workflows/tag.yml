@@ -1,0 +1,27 @@
+# Moves the v1 tag. Push a commit to the `release` branch (or run this by hand)
+# and every repo calling @v1 picks it up on its next run.
+name: Move v1 tag
+
+on:
+  push:
+    branches: [release]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tag
+  cancel-in-progress: false
+
+jobs:
+  tag:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Move v1 to this commit
+        run: |
+          git tag -f v1
+          git push -f origin v1
+          echo "v1 -> $(git rev-parse --short HEAD)" >> "$GITHUB_STEP_SUMMARY"

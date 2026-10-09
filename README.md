@@ -83,5 +83,5 @@ jobs:
 - **Dependabot PRs can't read Actions secrets.** Any job that needs one (an AI review, Sentry upload) should skip bot PRs with `if: github.event.pull_request.user.type != 'Bot'`, or it will fail on every bump.
 - **Merges made by the workflow don't trigger other workflows.** GitHub won't start new runs from a `GITHUB_TOKEN` push. Deploys through the Vercel or Netlify apps are unaffected.
 - **Private repos can call these** because this repo is public.
-- **Callers pin to `@v1`.** Changes land on `main` first. Once they look good, move the tag with `git tag -f v1 && git push -f origin v1` and every repo picks them up on its next run. Breaking changes get a new `v2` tag instead.
+- **Callers pin to `@v1`.** Changes land on `main` first. Once they look good, push `main` to the `release` branch (`git push origin main:release`) or run the [Move v1 tag](.github/workflows/tag.yml) workflow by hand, and every repo picks them up on its next run. Breaking changes get a new `v2` tag instead.
 - **This repo lints itself.** [`lint.yml`](.github/workflows/lint.yml) runs actionlint on the workflows and templates, and Dependabot keeps the actions here up to date.
