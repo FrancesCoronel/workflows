@@ -60,7 +60,7 @@ jobs:
 | Input | Default | |
 | --- | --- | --- |
 | `lint` | `true` | markdownlint-cli2 |
-| `lint-globs` | `**/*.md` | One glob per line |
+| `lint-globs` | `**/*.md`, skipping `.github` and `node_modules` | One glob per line, `#` to exclude. Without a `.markdownlint*` config, line length, inline HTML and first-line-heading rules are off |
 | `links` | `true` | lychee link check |
 | `lychee-args` | `""` | e.g. `--exclude linkedin.com` |
 

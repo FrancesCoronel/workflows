@@ -11,9 +11,12 @@ on:
         type: boolean
         default: true
       lint-globs:
-        description: Files for markdownlint, one glob per line
+        description: Files for markdownlint, one glob per line (# excludes)
         type: string
-        default: "**/*.md"
+        default: |
+          **/*.md
+          #.github
+          #node_modules
       links:
         description: Check links with lychee
         type: boolean
@@ -37,11 +40,22 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Default markdownlint config
+        id: mdcfg
+        if: inputs.lint
+        run: |
+          # Repos with their own config keep it. Otherwise skip the rules that
+          # fight normal prose: line length, inline HTML, first-line heading.
+          if ls .markdownlint* .markdownlint-cli2.* >/dev/null 2>&1; then exit 0; fi
+          echo '{ "default": true, "MD013": false, "MD033": false, "MD041": false }' > "$RUNNER_TEMP/markdownlint.json"
+          echo "config=$RUNNER_TEMP/markdownlint.json" >> "$GITHUB_OUTPUT"
+
       - name: markdownlint
         if: inputs.lint
         uses: DavidAnson/markdownlint-cli2-action@v24
         with:
           globs: ${{ inputs.lint-globs }}
+          config: ${{ steps.mdcfg.outputs.config }}
 
       - name: Pick files to link-check
         id: files
