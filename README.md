@@ -1,0 +1,87 @@
+# workflows
+
+Shared GitHub Actions for all of [@FrancesCoronel](https://github.com/FrancesCoronel)'s repos. Define once, call everywhere. ✨
+
+Each repo keeps a tiny caller file. The real logic lives here, so a fix in this repo reaches every project at once.
+
+## What's inside
+
+| Workflow | What it does |
+| --- | --- |
+| [`ci-node.yml`](.github/workflows/ci-node.yml) | Detects npm, pnpm or yarn, installs from the lockfile, then runs whichever of `lint`, `typecheck` (or `tsc --noEmit`), `test` and `build` the repo has. Audits production deps for high and critical vulns (npm and pnpm). |
+| [`ci-markdown.yml`](.github/workflows/ci-markdown.yml) | For docs and awesome-list repos. Runs markdownlint, then checks links with lychee. On PRs it only checks the files the PR touches, so a new link gets verified without old rot blocking it. |
+| [`dependabot-automerge.yml`](.github/workflows/dependabot-automerge.yml) | Runs only after CI passes. Squash-merges Dependabot patch and minor bumps. Major bumps get a `major-update` label and a comment, then wait for a human. |
+| [`codeql.yml`](.github/workflows/codeql.yml) | CodeQL security scanning, with languages as an input. |
+| [`community-triage.yml`](.github/workflows/community-triage.yml) | Labels PRs from outside contributors as `community` so they get a careful review and never get auto-merged. |
+
+## Add to a repo
+
+1. Copy the files from [`templates/`](templates) into the repo's `.github/` folder:
+   - `templates/workflows/pr.yml` → `.github/workflows/pr.yml` (Node CI + Dependabot auto-merge)
+   - or `templates/workflows/pr-markdown.yml` → `.github/workflows/pr.yml` (Markdown CI + Dependabot auto-merge)
+   - `templates/workflows/codeql.yml` → `.github/workflows/codeql.yml`
+   - `templates/workflows/community.yml` → `.github/workflows/community.yml`
+   - `templates/dependabot.yml` → `.github/dependabot.yml`
+2. Delete any old workflows that these replace.
+3. In the repo's **Settings → General**, turn on **Allow auto-merge** and **Automatically delete head branches**.
+4. Optional, for public repos: add a branch ruleset on `main` that requires the `ci / ci` check. Auto-merge will then also wait for any other required checks, such as Vercel.
+
+A caller looks like this:
+
+```yaml
+jobs:
+  ci:
+    uses: FrancesCoronel/workflows/.github/workflows/ci-node.yml@v1
+
+  dependabot:
+    needs: ci
+    uses: FrancesCoronel/workflows/.github/workflows/dependabot-automerge.yml@v1
+    permissions:
+      contents: write
+      pull-requests: write
+```
+
+## Inputs
+
+**`ci-node.yml`**
+
+| Input | Default | |
+| --- | --- | --- |
+| `node-version` | `""` | Empty uses `.nvmrc` or `.node-version` if present, else Node 24 |
+| `pnpm-version` | `""` | Empty reads `packageManager` from `package.json` |
+| `working-directory` | `.` | For monorepos or apps in a subfolder |
+| `typecheck` | `true` | Set `false` while a repo has known type errors |
+| `extra-scripts` | `""` | More scripts to run, e.g. `lint:md` |
+| `run-build` | `true` | Set `false` if the build needs secrets that Dependabot PRs can't read |
+| `audit` | `true` | `npm audit --omit=dev` or `pnpm audit --prod`, failing on high and critical |
+
+**`ci-markdown.yml`**
+
+| Input | Default | |
+| --- | --- | --- |
+| `lint` | `true` | markdownlint-cli2 |
+| `lint-globs` | `**/*.md` | One glob per line |
+| `links` | `true` | lychee link check |
+| `lychee-args` | `""` | e.g. `--exclude linkedin.com` |
+
+**`dependabot-automerge.yml`**
+
+| Input | Default | |
+| --- | --- | --- |
+| `merge-method` | `squash` | `squash`, `merge` or `rebase` |
+| `allow-major` | `false` | Auto-merge majors too (only for repos with strong tests) |
+
+**`codeql.yml`**
+
+| Input | Default |
+| --- | --- |
+| `languages` | `'["javascript-typescript","actions"]'` |
+| `queries` | `""` (e.g. `security-and-quality`) |
+
+## Good to know
+
+- **Dependabot PRs can't read Actions secrets.** Any job that needs one (an AI review, Sentry upload) should skip bot PRs with `if: github.event.pull_request.user.type != 'Bot'`, or it will fail on every bump.
+- **Merges made by the workflow don't trigger other workflows.** GitHub won't start new runs from a `GITHUB_TOKEN` push. Deploys through the Vercel or Netlify apps are unaffected.
+- **Private repos can call these** because this repo is public.
+- **Callers pin to `@v1`.** Changes land on `main` first. Once they look good, move the tag with `git tag -f v1 && git push -f origin v1` and every repo picks them up on its next run. Breaking changes get a new `v2` tag instead.
+- **This repo lints itself.** [`lint.yml`](.github/workflows/lint.yml) runs actionlint on the workflows and templates, and Dependabot keeps the actions here up to date.
