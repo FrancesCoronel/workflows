@@ -81,6 +81,7 @@ jobs:
 | Input | Default | |
 | --- | --- | --- |
 | `script` | `test:coverage` | Must write an Istanbul json-summary (vitest `--coverage.reporter=json-summary`, jest `--coverageReporters=json-summary`) |
+| `setup` | `""` | Command run after install, e.g. `npx playwright install --with-deps chromium` for browser tests |
 | `summary-path` | `coverage/coverage-summary.json` | |
 | `min` | `100` | Floor for every metric. A repo with few tests starts at `0` and raises it as tests land. The job summary says when the floor can go up |
 | `target` | `100` | Shown in the job summary |

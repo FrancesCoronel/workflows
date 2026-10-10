@@ -23,6 +23,10 @@ on:
         description: package.json script that runs tests with coverage
         type: string
         default: test:coverage
+      setup:
+        description: Shell command run after install, e.g. "npx playwright install --with-deps chromium"
+        type: string
+        default: ""
       summary-path:
         description: Istanbul json-summary file the script writes, relative to working-directory
         type: string
@@ -85,6 +89,7 @@ jobs:
         env:
           PM: ${{ steps.pm.outputs.pm }}
           SCRIPT: ${{ inputs.script }}
+          SETUP: ${{ inputs.setup }}
           SUMMARY: ${{ inputs.summary-path }}
         run: |
           has() { node -e "process.exit(require('./package.json').scripts?.['$1'] ? 0 : 1)"; }
@@ -94,6 +99,7 @@ jobs:
             exit 0
           fi
           case "$PM" in pnpm) pnpm install --frozen-lockfile ;; yarn) yarn install --frozen-lockfile ;; npm) npm ci ;; esac
+          if [ -n "$SETUP" ]; then bash -c "$SETUP"; fi
           "$PM" run "$SCRIPT"
           test -f "$SUMMARY" || { echo "::error::$SCRIPT ran but $SUMMARY was not written. Add the json-summary reporter."; exit 1; }
           cp "$SUMMARY" "$RUNNER_TEMP/head.json"
@@ -112,11 +118,13 @@ jobs:
         env:
           PM: ${{ steps.pm.outputs.pm }}
           SCRIPT: ${{ inputs.script }}
+          SETUP: ${{ inputs.setup }}
           SUMMARY: ${{ inputs.summary-path }}
         run: |
           has() { node -e "process.exit(require('./package.json').scripts?.['$1'] ? 0 : 1)"; }
           if ! has "$SCRIPT"; then echo "Base has no $SCRIPT script; nothing to ratchet against."; exit 0; fi
           case "$PM" in pnpm) pnpm install --frozen-lockfile ;; yarn) yarn install --frozen-lockfile ;; npm) npm ci ;; esac
+          if [ -n "$SETUP" ]; then bash -c "$SETUP"; fi
           # A broken base shouldn't block the PR that fixes it
           if "$PM" run "$SCRIPT" && [ -f "$SUMMARY" ]; then cp "$SUMMARY" "$RUNNER_TEMP/base.json"
           else echo "::warning::Base coverage run failed; skipping the ratchet."; fi
