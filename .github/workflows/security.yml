@@ -1,0 +1,90 @@
+# Reusable security gate. Three jobs, each on by default:
+#   - dependency-review: PRs can't add a dependency with a known vulnerability
+#     (any severity). Needs the dependency graph; private repos also need GHAS.
+#   - workflow-audit: zizmor checks GitHub Actions workflows for injection,
+#     unpinned actions, risky triggers and over-broad permissions.
+#   - secrets: gitleaks scans the checkout for committed credentials.
+# Pair with codeql.yml (or CodeQL default setup) for code scanning.
+name: Security
+
+on:
+  workflow_call:
+    inputs:
+      dependency-review:
+        type: boolean
+        default: true
+      fail-on-severity:
+        description: low, moderate, high or critical
+        type: string
+        default: low
+      workflow-audit:
+        type: boolean
+        default: true
+      zizmor-min-severity:
+        description: informational, low, medium or high
+        type: string
+        default: medium
+      secrets:
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    if: inputs.dependency-review && github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: ${{ inputs.fail-on-severity }}
+
+  workflow-audit:
+    if: inputs.workflow-audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: zizmor
+        env:
+          MIN: ${{ inputs.zizmor-min-severity }}
+        run: |
+          # A repo's own zizmor.yml / .github/zizmor.yml wins. Otherwise: GitHub's
+          # actions and this repo's @v1 refs may float, everything else is SHA-pinned.
+          if [ -f zizmor.yml ] || [ -f .github/zizmor.yml ]; then cfg=()
+          else
+            cat > "$RUNNER_TEMP/zizmor.yml" <<'YAML'
+          rules:
+            unpinned-uses:
+              config:
+                policies:
+                  actions/*: ref-pin
+                  github/*: ref-pin
+                  FrancesCoronel/workflows/*: ref-pin
+                  "*": hash-pin
+          YAML
+            cfg=(--config "$RUNNER_TEMP/zizmor.yml")
+          fi
+          pipx run zizmor==1.30.1 --offline --format github --min-severity "$MIN" "${cfg[@]}" .github/workflows
+
+  secrets:
+    if: inputs.secrets
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          # Full history on pushes so a secret added and then deleted still counts
+          fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
+
+      - name: gitleaks
+        run: |
+          docker run --rm -v "$PWD:/repo" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git /repo --redact --no-banner --exit-code 1

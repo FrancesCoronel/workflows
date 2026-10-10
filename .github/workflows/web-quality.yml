@@ -1,0 +1,201 @@
+# Reusable accessibility and performance gate for web apps.
+#
+# Builds the app once, starts it, then runs:
+#   - pa11y-ci with axe: zero WCAG violations allowed on every listed page
+#   - Lighthouse CI: category scores must meet the minimums below
+# A repo can bring its own .pa11yci.json or lighthouserc.json; otherwise
+# both are generated from `urls`.
+name: Web quality
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node version. Empty means use .nvmrc / .node-version if present, else 24
+        type: string
+        default: ""
+      working-directory:
+        type: string
+        default: "."
+      build-script:
+        description: package.json script that builds the app. Empty skips the build
+        type: string
+        default: build
+      start-script:
+        description: package.json script that serves the built app
+        type: string
+        default: start
+      port:
+        type: number
+        default: 3000
+      urls:
+        description: Paths to test, one per line
+        type: string
+        default: "/"
+      a11y:
+        description: Run pa11y-ci (axe)
+        type: boolean
+        default: true
+      a11y-standard:
+        description: WCAG2A, WCAG2AA or WCAG2AAA
+        type: string
+        default: WCAG2AA
+      pa11y-config:
+        description: Path to a pa11y-ci config. Empty generates one from urls
+        type: string
+        default: ""
+      lighthouse:
+        description: Run Lighthouse CI
+        type: boolean
+        default: true
+      lighthouse-config:
+        description: Path to a lighthouserc.json (without startServerCommand). Empty generates one from urls and the minimums below
+        type: string
+        default: ""
+      performance-min:
+        description: Minimum Lighthouse performance score (0-1). Shared runners vary a few points run to run
+        type: number
+        default: 0.9
+      accessibility-min:
+        type: number
+        default: 1
+      best-practices-min:
+        type: number
+        default: 1
+      seo-min:
+        type: number
+        default: 1
+    secrets:
+      build-env:
+        description: Optional dotenv-style lines written to .env.local before the build
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  web-quality:
+    name: web-quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Detect package manager and Node version
+        id: pm
+        env:
+          NODE_INPUT: ${{ inputs.node-version }}
+          WD: ${{ inputs.working-directory }}
+        run: |
+          if [ -f pnpm-lock.yaml ]; then echo "pm=pnpm" >> "$GITHUB_OUTPUT"
+          elif [ -f yarn.lock ]; then echo "pm=yarn" >> "$GITHUB_OUTPUT"
+          else echo "pm=npm" >> "$GITHUB_OUTPUT"; fi
+          if [ -n "$NODE_INPUT" ]; then echo "node=$NODE_INPUT" >> "$GITHUB_OUTPUT"
+          elif [ -f .nvmrc ]; then echo "node-file=$WD/.nvmrc" >> "$GITHUB_OUTPUT"
+          elif [ -f .node-version ]; then echo "node-file=$WD/.node-version" >> "$GITHUB_OUTPUT"
+          else echo "node=24" >> "$GITHUB_OUTPUT"; fi
+
+      - if: steps.pm.outputs.pm == 'pnpm'
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          package_json_file: ${{ inputs.working-directory }}/package.json
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ steps.pm.outputs.node }}
+          node-version-file: ${{ steps.pm.outputs.node-file }}
+          cache: ${{ steps.pm.outputs.pm }}
+          cache-dependency-path: ${{ inputs.working-directory }}/${{ steps.pm.outputs.pm == 'pnpm' && 'pnpm-lock.yaml' || steps.pm.outputs.pm == 'yarn' && 'yarn.lock' || 'package-lock.json' }}
+
+      - name: Install
+        env:
+          PM: ${{ steps.pm.outputs.pm }}
+        run: |
+          case "$PM" in pnpm) pnpm install --frozen-lockfile ;; yarn) yarn install --frozen-lockfile ;; npm) npm ci ;; esac
+
+      - name: Build
+        if: inputs.build-script != ''
+        env:
+          PM: ${{ steps.pm.outputs.pm }}
+          SCRIPT: ${{ inputs.build-script }}
+          BUILD_ENV: ${{ secrets.build-env }}
+        run: |
+          if [ -n "$BUILD_ENV" ]; then printf '%s\n' "$BUILD_ENV" > .env.local; fi
+          "$PM" run "$SCRIPT"
+
+      - name: Start
+        env:
+          PM: ${{ steps.pm.outputs.pm }}
+          SCRIPT: ${{ inputs.start-script }}
+          PORT: ${{ inputs.port }}
+        run: |
+          nohup "$PM" run "$SCRIPT" > "$RUNNER_TEMP/server.log" 2>&1 &
+          for _ in $(seq 60); do
+            curl -fsS -o /dev/null "http://localhost:$PORT/" && exit 0
+            sleep 2
+          done
+          echo "::error::Server didn't answer on port $PORT within 2 minutes"; cat "$RUNNER_TEMP/server.log"; exit 1
+
+      - name: Write configs
+        env:
+          URLS: ${{ inputs.urls }}
+          PORT: ${{ inputs.port }}
+          STANDARD: ${{ inputs.a11y-standard }}
+          PERF: ${{ inputs.performance-min }}
+          A11Y: ${{ inputs.accessibility-min }}
+          BP: ${{ inputs.best-practices-min }}
+          SEO: ${{ inputs.seo-min }}
+        run: |
+          node <<'JS'
+          const fs = require('fs');
+          const e = process.env;
+          const urls = e.URLS.split('\n').map((s) => s.trim()).filter(Boolean)
+            .map((p) => (p.startsWith('http') ? p : `http://localhost:${e.PORT}${p.startsWith('/') ? '' : '/'}${p}`));
+          fs.writeFileSync(`${e.RUNNER_TEMP}/pa11yci.json`, JSON.stringify({
+            defaults: { standard: e.STANDARD, runners: ['axe'], timeout: 30000, wait: 500,
+              chromeLaunchConfig: { args: ['--no-sandbox'] } },
+            urls,
+          }, null, 2));
+          const min = (s) => ['error', { minScore: Number(s) }];
+          fs.writeFileSync(`${e.RUNNER_TEMP}/lighthouserc.json`, JSON.stringify({
+            ci: {
+              collect: { url: urls, numberOfRuns: 3, settings: { chromeFlags: '--no-sandbox' } },
+              assert: { assertions: {
+                'categories:performance': min(e.PERF),
+                'categories:accessibility': min(e.A11Y),
+                'categories:best-practices': min(e.BP),
+                'categories:seo': min(e.SEO),
+              } },
+              upload: { target: 'filesystem', outputDir: `${e.RUNNER_TEMP}/lhci` },
+            },
+          }, null, 2));
+          JS
+
+      - name: Accessibility (pa11y-ci + axe)
+        if: inputs.a11y
+        env:
+          CONFIG: ${{ inputs.pa11y-config }}
+        run: npx --yes pa11y-ci@5.0.0 --threshold 0 --config "${CONFIG:-$RUNNER_TEMP/pa11yci.json}"
+
+      - name: Lighthouse
+        if: inputs.lighthouse && !cancelled()
+        env:
+          CONFIG: ${{ inputs.lighthouse-config }}
+        # A bring-your-own lighthouserc.json should leave out startServerCommand,
+        # since the server is already running
+        run: npx --yes @lhci/cli@0.15.1 autorun --config="${CONFIG:-$RUNNER_TEMP/lighthouserc.json}"
+
+      - name: Upload Lighthouse reports
+        if: inputs.lighthouse && !cancelled()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lighthouse
+          path: |
+            ${{ inputs.working-directory }}/.lighthouseci
+            ${{ runner.temp }}/lhci
+          if-no-files-found: ignore

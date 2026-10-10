@@ -1,0 +1,45 @@
+# Reusable CI for shell-script repos (dotfiles, install scripts).
+# Runs ShellCheck on every *.sh / *.bash file and every file with a
+# bash/sh/zsh shebang. zsh files are skipped, since ShellCheck can't parse them.
+name: CI (shell)
+
+on:
+  workflow_call:
+    inputs:
+      severity:
+        description: Minimum ShellCheck severity that fails the job (error, warning, info, style)
+        type: string
+        default: style
+      exclude:
+        description: Comma-separated ShellCheck codes to ignore, e.g. SC1090,SC1091
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: ShellCheck
+        env:
+          SEVERITY: ${{ inputs.severity }}
+          EXCLUDE: ${{ inputs.exclude }}
+        run: |
+          mapfile -t files < <(git ls-files -z | xargs -0 -I{} sh -c '
+            f="$1"; [ -f "$f" ] || exit 0
+            case "$f" in *.sh|*.bash) echo "$f"; exit 0 ;; *.zsh) exit 0 ;; esac
+            head -n1 "$f" 2>/dev/null | grep -qE "^#!.*\b(ba|da)?sh\b" && echo "$f"' _ {})
+          if [ "${#files[@]}" -eq 0 ]; then echo "No shell scripts found"; exit 0; fi
+          printf '%s\n' "${files[@]}"
+          args=(--severity "$SEVERITY" --format gcc)
+          [ -n "$EXCLUDE" ] && args+=(--exclude "$EXCLUDE")
+          shellcheck "${args[@]}" "${files[@]}" | sed -E 's/^([^:]+):([0-9]+):([0-9]+): (error|warning|note): (.*)$/::\4 file=\1,line=\2,col=\3::\5/; s/^::note /::notice /'
+          exit "${PIPESTATUS[0]}"
