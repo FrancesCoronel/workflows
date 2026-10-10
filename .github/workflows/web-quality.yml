@@ -235,22 +235,28 @@ jobs:
           if (!fs.existsSync(`${dir}/manifest.json`)) process.exit(0);
           const runs = JSON.parse(fs.readFileSync(`${dir}/manifest.json`, 'utf8')).filter((r) => r.isRepresentativeRun);
           const pct = (n) => (n == null ? '–' : Math.round(n * 100));
+          // GitHub keeps 10 annotations per step, so group them: one for scores, one per category that lost points
+          const scores = [];
+          const losses = {};
           const rows = runs.map((r) => {
             const s = r.summary;
-            const line = `${new URL(r.url).pathname}: performance ${pct(s.performance)}, accessibility ${pct(s.accessibility)}, best practices ${pct(s['best-practices'])}, SEO ${pct(s.seo)}`;
-            console.log(`::notice title=Lighthouse::${line}`);
+            const page = new URL(r.url).pathname;
+            scores.push(`${page}: performance ${pct(s.performance)}, accessibility ${pct(s.accessibility)}, best practices ${pct(s['best-practices'])}, SEO ${pct(s.seo)}`);
             const report = JSON.parse(fs.readFileSync(r.jsonPath, 'utf8'));
-            // Name what cost points, so a failure is fixable from the summary alone
+            // Name what cost points, so a failure is fixable from the annotations alone
             for (const cat of Object.values(report.categories)) {
               if (cat.score === 1) continue;
-              const losses = cat.auditRefs
+              const top = cat.auditRefs
                 .filter((a) => a.weight > 0 && report.audits[a.id].score !== null && report.audits[a.id].score < 1)
                 .sort((a, b) => b.weight - a.weight).slice(0, 4)
                 .map((a) => `${a.id} ${report.audits[a.id].displayValue || pct(report.audits[a.id].score)}`);
-              if (losses.length) console.log(`::notice title=Lighthouse ${cat.id}::${new URL(r.url).pathname}: ${losses.join('; ')}`);
+              if (top.length) (losses[cat.id] ||= []).push(`${page}: ${top.join('; ')}`);
             }
-            return `| ${new URL(r.url).pathname} | ${pct(s.performance)} | ${pct(s.accessibility)} | ${pct(s['best-practices'])} | ${pct(s.seo)} |`;
+            return `| ${page} | ${pct(s.performance)} | ${pct(s.accessibility)} | ${pct(s['best-practices'])} | ${pct(s.seo)} |`;
           });
+          const annotate = (title, lines) => console.log(`::notice title=${title}::${lines.join('%0A')}`);
+          if (scores.length) annotate('Lighthouse scores', scores);
+          for (const [cat, lines] of Object.entries(losses)) annotate(`Lighthouse ${cat}`, lines);
           fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, ['### Lighthouse', '', '| Page | Performance | Accessibility | Best practices | SEO |', '| --- | --- | --- | --- | --- |', ...rows, ''].join('\n'));
           JS
 
