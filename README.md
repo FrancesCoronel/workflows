@@ -11,6 +11,10 @@ Each repo keeps a tiny caller file. The real logic lives here, so a fix in this 
 | [`ci-node.yml`](.github/workflows/ci-node.yml) | Detects npm, pnpm or yarn, installs from the lockfile, then runs whichever of `lint`, `typecheck` (or `tsc --noEmit`), `test` and `build` the repo has. Audits production deps for high and critical vulns (npm and pnpm). |
 | [`ci-markdown.yml`](.github/workflows/ci-markdown.yml) | For docs and awesome-list repos. Runs markdownlint, then checks links with lychee. On PRs it only checks the files the PR touches, so a new link gets verified without old rot blocking it. |
 | [`dependabot-automerge.yml`](.github/workflows/dependabot-automerge.yml) | Runs only after CI passes. Squash-merges Dependabot patch and minor bumps. Major bumps get a `major-update` label and a comment, then wait for a human. |
+| [`coverage.yml`](.github/workflows/coverage.yml) | Runs `test:coverage` and reads the Istanbul `coverage-summary.json`. Fails below the `min` floor, and on PRs fails if lines, branches, functions or statements drop below the base branch. |
+| [`web-quality.yml`](.github/workflows/web-quality.yml) | Builds and starts a web app, then runs axe-core at desktop and phone widths (zero WCAG 2 AA violations) and Lighthouse CI (performance 90+, accessibility, best practices and SEO 100). |
+| [`security.yml`](.github/workflows/security.yml) | Dependency review on PRs (no new vulnerable deps at any severity), zizmor on the workflows, and gitleaks for committed secrets. |
+| [`ci-shell.yml`](.github/workflows/ci-shell.yml) | ShellCheck on every shell script, for dotfiles and install scripts. |
 | [`codeql.yml`](.github/workflows/codeql.yml) | CodeQL security scanning, with languages as an input. |
 | [`community-triage.yml`](.github/workflows/community-triage.yml) | Labels PRs from outside contributors as `community` so they get a careful review and never get auto-merged. |
 
@@ -19,6 +23,7 @@ Each repo keeps a tiny caller file. The real logic lives here, so a fix in this 
 1. Copy the files from [`templates/`](templates) into the repo's `.github/` folder:
    - `templates/workflows/pr.yml` → `.github/workflows/pr.yml` (Node CI + Dependabot auto-merge)
    - or `templates/workflows/pr-markdown.yml` → `.github/workflows/pr.yml` (Markdown CI + Dependabot auto-merge)
+   - or `templates/workflows/pr-shell.yml` → `.github/workflows/pr.yml` (ShellCheck)
    - `templates/workflows/codeql.yml` → `.github/workflows/codeql.yml`
    - `templates/workflows/community.yml` → `.github/workflows/community.yml`
    - `templates/dependabot.yml` → `.github/dependabot.yml`
@@ -71,12 +76,70 @@ jobs:
 | `merge-method` | `squash` | `squash`, `merge` or `rebase` |
 | `allow-major` | `false` | Auto-merge majors too (only for repos with strong tests) |
 
+**`coverage.yml`**
+
+| Input | Default | |
+| --- | --- | --- |
+| `script` | `test:coverage` | Must write an Istanbul json-summary (vitest `--coverage.reporter=json-summary`, jest `--coverageReporters=json-summary`) |
+| `setup` | `""` | Command run after install, e.g. `npx playwright install --with-deps chromium` for browser tests |
+| `summary-path` | `coverage/coverage-summary.json` | |
+| `min` | `100` | Floor for every metric. A repo with few tests starts at `0` and raises it as tests land. The job summary says when the floor can go up |
+| `target` | `100` | Shown in the job summary |
+| `ratchet` | `true` | On PRs, also measure the base branch and fail on any drop |
+
+With no `test:coverage` script the job counts coverage as 0% and warns, so `min: 0` passes and anything higher fails.
+
+**`web-quality.yml`**
+
+| Input | Default | |
+| --- | --- | --- |
+| `urls` | `/` | Paths to test, one per line |
+| `build-script` / `start-script` | `build` / `start` | Empty `build-script` skips the build |
+| `port` | `3000` | |
+| `a11y` / `lighthouse` | `true` / `true` | |
+| `a11y-standard` | `WCAG2AA` | |
+| `lighthouse-config` | `""` | Bring your own. A custom `lighthouserc.json` should leave out `startServerCommand`, since the server is already running |
+| `performance-min` | `0.9` | Scores on shared runners move a few points between runs, so 1.0 would flake |
+| `accessibility-min`, `best-practices-min`, `seo-min` | `1` | |
+
+Secret `build-env`: optional dotenv lines written to `.env.local` before the build.
+
+**`security.yml`**
+
+| Input | Default | |
+| --- | --- | --- |
+| `dependency-review` | `true` | Needs the dependency graph. Private repos also need GitHub Advanced Security, so set `false` there |
+| `fail-on-severity` | `low` | |
+| `workflow-audit` | `true` | zizmor. Uses the repo's `zizmor.yml` if it has one; otherwise third-party actions must be SHA-pinned while `actions/*`, `github/*` and this repo's `@v1` may use tags |
+| `zizmor-min-severity` | `medium` | |
+| `secrets` | `true` | gitleaks. Scans full history on pushes and the PR merge commit on PRs |
+
+**`ci-shell.yml`**
+
+| Input | Default |
+| --- | --- |
+| `severity` | `style` |
+| `exclude` | `""` (e.g. `SC1090,SC1091`) |
+
 **`codeql.yml`**
 
 | Input | Default |
 | --- | --- |
 | `languages` | `'["javascript-typescript","actions"]'` |
 | `queries` | `""` (e.g. `security-and-quality`) |
+
+## The quality bar
+
+Every repo aims for the same bar. A gate that a repo can't meet yet starts where the repo is today and only moves up.
+
+| | Gate | Bar |
+| --- | --- | --- |
+| Tests | `coverage.yml` | 100% lines, branches, functions and statements. Repos below that ratchet up and can never go down |
+| Accessibility | `web-quality.yml` | Zero axe violations at WCAG 2 AA on every listed page, and a Lighthouse accessibility score of 100 |
+| Performance | `web-quality.yml` | Lighthouse performance 90+, best practices and SEO 100 |
+| Security | `security.yml`, `codeql.yml`, `ci-node.yml` audit | No new vulnerable deps, no high or critical vulns in production deps, no CodeQL alerts, no workflow findings, no committed secrets |
+
+Coverage, accessibility and performance don't apply to Markdown and shell repos, so those run `security.yml` and their own linters.
 
 ## Good to know
 

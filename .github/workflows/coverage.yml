@@ -1,0 +1,169 @@
+# Reusable test-coverage gate for Node projects.
+#
+# Runs the repo's `test:coverage` script, which must write an Istanbul
+# json-summary (vitest: --coverage.reporter=json-summary, jest:
+# --coverageReporters=json-summary). Two checks:
+#   1. Floor: lines, branches, functions and statements must each be >= `min`.
+#   2. Ratchet: on PRs, none of them may drop below the base branch.
+# Start a repo with few tests at `min: 0` and raise it as tests land; the
+# ratchet keeps coverage climbing toward `target` in the meantime.
+name: Coverage
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node version. Empty means use .nvmrc / .node-version if present, else 24
+        type: string
+        default: ""
+      working-directory:
+        type: string
+        default: "."
+      script:
+        description: package.json script that runs tests with coverage
+        type: string
+        default: test:coverage
+      setup:
+        description: Shell command run after install, e.g. "npx playwright install --with-deps chromium"
+        type: string
+        default: ""
+      summary-path:
+        description: Istanbul json-summary file the script writes, relative to working-directory
+        type: string
+        default: coverage/coverage-summary.json
+      min:
+        description: Floor (percent) every metric must meet
+        type: number
+        default: 100
+      target:
+        description: Goal shown in the job summary
+        type: number
+        default: 100
+      ratchet:
+        description: On PRs, fail if any metric drops below the base branch
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+jobs:
+  coverage:
+    name: coverage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          path: head
+
+      - name: Detect package manager and Node version
+        id: pm
+        working-directory: head/${{ inputs.working-directory }}
+        env:
+          NODE_INPUT: ${{ inputs.node-version }}
+          WD: ${{ inputs.working-directory }}
+        run: |
+          if [ -f pnpm-lock.yaml ]; then echo "pm=pnpm" >> "$GITHUB_OUTPUT"
+          elif [ -f yarn.lock ]; then echo "pm=yarn" >> "$GITHUB_OUTPUT"
+          else echo "pm=npm" >> "$GITHUB_OUTPUT"; fi
+          if [ -n "$NODE_INPUT" ]; then echo "node=$NODE_INPUT" >> "$GITHUB_OUTPUT"
+          elif [ -f .nvmrc ]; then echo "node-file=head/$WD/.nvmrc" >> "$GITHUB_OUTPUT"
+          elif [ -f .node-version ]; then echo "node-file=head/$WD/.node-version" >> "$GITHUB_OUTPUT"
+          else echo "node=24" >> "$GITHUB_OUTPUT"; fi
+
+      - if: steps.pm.outputs.pm == 'pnpm'
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          package_json_file: head/${{ inputs.working-directory }}/package.json
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ steps.pm.outputs.node }}
+          node-version-file: ${{ steps.pm.outputs.node-file }}
+
+      - name: Measure head
+        id: head
+        working-directory: head/${{ inputs.working-directory }}
+        env:
+          PM: ${{ steps.pm.outputs.pm }}
+          SCRIPT: ${{ inputs.script }}
+          SETUP: ${{ inputs.setup }}
+          SUMMARY: ${{ inputs.summary-path }}
+        run: |
+          has() { node -e "process.exit(require('./package.json').scripts?.['$1'] ? 0 : 1)"; }
+          if ! has "$SCRIPT"; then
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::No \"$SCRIPT\" script yet, so coverage counts as 0%. Add one that writes $SUMMARY."
+            exit 0
+          fi
+          case "$PM" in pnpm) pnpm install --frozen-lockfile ;; yarn) yarn install --frozen-lockfile ;; npm) npm ci ;; esac
+          if [ -n "$SETUP" ]; then bash -c "$SETUP"; fi
+          "$PM" run "$SCRIPT"
+          test -f "$SUMMARY" || { echo "::error::$SCRIPT ran but $SUMMARY was not written. Add the json-summary reporter."; exit 1; }
+          cp "$SUMMARY" "$RUNNER_TEMP/head.json"
+
+      - name: Check out base
+        if: inputs.ratchet && github.event_name == 'pull_request' && steps.head.outputs.missing != 'true'
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+
+      - name: Measure base
+        if: inputs.ratchet && github.event_name == 'pull_request' && steps.head.outputs.missing != 'true'
+        working-directory: base/${{ inputs.working-directory }}
+        env:
+          PM: ${{ steps.pm.outputs.pm }}
+          SCRIPT: ${{ inputs.script }}
+          SETUP: ${{ inputs.setup }}
+          SUMMARY: ${{ inputs.summary-path }}
+        run: |
+          has() { node -e "process.exit(require('./package.json').scripts?.['$1'] ? 0 : 1)"; }
+          if ! has "$SCRIPT"; then echo "Base has no $SCRIPT script; nothing to ratchet against."; exit 0; fi
+          case "$PM" in pnpm) pnpm install --frozen-lockfile ;; yarn) yarn install --frozen-lockfile ;; npm) npm ci ;; esac
+          if [ -n "$SETUP" ]; then bash -c "$SETUP"; fi
+          # A broken base shouldn't block the PR that fixes it
+          if "$PM" run "$SCRIPT" && [ -f "$SUMMARY" ]; then cp "$SUMMARY" "$RUNNER_TEMP/base.json"
+          else echo "::warning::Base coverage run failed; skipping the ratchet."; fi
+
+      - name: Compare
+        env:
+          MIN: ${{ inputs.min }}
+          TARGET: ${{ inputs.target }}
+        run: |
+          node <<'JS'
+          const fs = require('fs');
+          const tmp = process.env.RUNNER_TEMP;
+          const read = (f) => fs.existsSync(`${tmp}/${f}`) ? JSON.parse(fs.readFileSync(`${tmp}/${f}`, 'utf8')).total : null;
+          const metrics = ['lines', 'branches', 'functions', 'statements'];
+          const zero = Object.fromEntries(metrics.map((m) => [m, { pct: 0 }]));
+          const head = read('head.json') ?? zero;
+          const base = read('base.json');
+          const min = Number(process.env.MIN), target = Number(process.env.TARGET);
+          // Istanbul reports "Unknown" when there is nothing to count, e.g. no branches
+          const pct = (t, m) => (typeof t[m].pct === 'number' ? t[m].pct : 100);
+          const rows = [], errors = [];
+          for (const m of metrics) {
+            const h = pct(head, m), b = base ? pct(base, m) : null;
+            if (h < min) errors.push(`${m} ${h}% is below the ${min}% floor`);
+            if (b !== null && h < b - 0.1) errors.push(`${m} dropped from ${b}% to ${h}%`);
+            rows.push(`| ${m} | ${h}% | ${b === null ? '' : b + '%'} | ${min}% | ${target}% |`);
+          }
+          const low = Math.min(...metrics.map((m) => pct(head, m)));
+          const summary = [
+            '### Coverage',
+            '',
+            '| Metric | This run | Base | Floor | Target |',
+            '| --- | --- | --- | --- | --- |',
+            ...rows,
+            '',
+            low > min + 1 ? `Floor can go up: every metric is at least ${Math.floor(low)}%. Raise \`min\` to lock it in.` : '',
+            ...errors.map((e) => `- ❌ ${e}`),
+          ].join('\n');
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary + '\n');
+          for (const e of errors) console.log(`::error::${e}`);
+          process.exit(errors.length ? 1 : 0);
+          JS

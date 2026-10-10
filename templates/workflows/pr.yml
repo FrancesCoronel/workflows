@@ -17,8 +17,25 @@ jobs:
   ci:
     uses: FrancesCoronel/workflows/.github/workflows/ci-node.yml@v1
 
+  # Needs a test:coverage script that writes coverage/coverage-summary.json.
+  # A repo with few tests starts at min: 0; the ratchet stops it going down.
+  coverage:
+    uses: FrancesCoronel/workflows/.github/workflows/coverage.yml@v1
+    with:
+      min: 100
+
+  security:
+    uses: FrancesCoronel/workflows/.github/workflows/security.yml@v1
+
+  # Web apps only. Delete for libraries and extensions.
+  web-quality:
+    uses: FrancesCoronel/workflows/.github/workflows/web-quality.yml@v1
+    with:
+      urls: |
+        /
+
   dependabot:
-    needs: ci
+    needs: [ci, coverage, security, web-quality]
     if: github.event_name == 'pull_request' && github.event.pull_request.user.login == 'dependabot[bot]'
     uses: FrancesCoronel/workflows/.github/workflows/dependabot-automerge.yml@v1
     permissions:
