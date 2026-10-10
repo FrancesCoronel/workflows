@@ -52,7 +52,7 @@ jobs:
 
       - name: markdownlint
         if: inputs.lint
-        uses: DavidAnson/markdownlint-cli2-action@v24
+        uses: DavidAnson/markdownlint-cli2-action@21c1be1b93ad9ed58fa840aacc3f279cde2a72ff # v24.2.0
         with:
           globs: ${{ inputs.lint-globs }}
           config: ${{ steps.mdcfg.outputs.config }}
@@ -74,7 +74,7 @@ jobs:
       - name: Check links
         id: lychee
         if: inputs.links && steps.files.outputs.files != ''
-        uses: lycheeverse/lychee-action@v2
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8 # v2.9.0
         with:
           fail: true
           output: ${{ runner.temp }}/lychee.md
@@ -96,6 +96,12 @@ jobs:
         env:
           REPORT: ${{ runner.temp }}/lychee.md
         run: |
-          # Surface each broken link as an annotation so it shows on the PR
-          # without opening the logs.
-          grep -E '^\* \[' "$REPORT" | sed 's/^\* /::error title=Broken link::/' | head -50 || true
+          # Surface broken links as annotations so they show on the PR without
+          # opening the logs. GitHub keeps only 10 error annotations per step,
+          # so emit one per file with every broken link in it.
+          awk '
+            function flush() { if (n) printf "::error file=%s,title=%d broken link(s)::%s\n", file, n, msg; n = 0; msg = "" }
+            /^### Errors in / { flush(); file = substr($0, 15); next }
+            /^\* \[/ { sub(/^\* /, ""); msg = msg (n ? "%0A" : "") $0; n++ }
+            END { flush() }
+          ' "$REPORT" || true
