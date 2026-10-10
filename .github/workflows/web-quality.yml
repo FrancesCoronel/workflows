@@ -1,10 +1,11 @@
 # Reusable accessibility and performance gate for web apps.
 #
 # Builds the app once, starts it, then runs:
-#   - pa11y-ci with axe: zero WCAG violations allowed on every listed page
+#   - axe-core: zero WCAG violations allowed on every listed page, at desktop
+#     and phone widths
 #   - Lighthouse CI: category scores must meet the minimums below
-# A repo can bring its own .pa11yci.json or lighthouserc.json; otherwise
-# both are generated from `urls`.
+# A repo can bring its own lighthouserc.json; otherwise it is generated
+# from `urls`.
 name: Web quality
 
 on:
@@ -33,17 +34,13 @@ on:
         type: string
         default: "/"
       a11y:
-        description: Run pa11y-ci (axe)
+        description: Run axe-core
         type: boolean
         default: true
       a11y-standard:
         description: WCAG2A, WCAG2AA or WCAG2AAA
         type: string
         default: WCAG2AA
-      pa11y-config:
-        description: Path to a pa11y-ci config. Empty generates one from urls
-        type: string
-        default: ""
       lighthouse:
         description: Run Lighthouse CI
         type: boolean
@@ -145,7 +142,6 @@ jobs:
         env:
           URLS: ${{ inputs.urls }}
           PORT: ${{ inputs.port }}
-          STANDARD: ${{ inputs.a11y-standard }}
           PERF: ${{ inputs.performance-min }}
           A11Y: ${{ inputs.accessibility-min }}
           BP: ${{ inputs.best-practices-min }}
@@ -156,11 +152,7 @@ jobs:
           const e = process.env;
           const urls = e.URLS.split('\n').map((s) => s.trim()).filter(Boolean)
             .map((p) => (p.startsWith('http') ? p : `http://localhost:${e.PORT}${p.startsWith('/') ? '' : '/'}${p}`));
-          fs.writeFileSync(`${e.RUNNER_TEMP}/pa11yci.json`, JSON.stringify({
-            defaults: { standard: e.STANDARD, runners: ['axe'], timeout: 30000, wait: 500,
-              chromeLaunchConfig: { args: ['--no-sandbox'] } },
-            urls,
-          }, null, 2));
+          fs.writeFileSync(`${e.RUNNER_TEMP}/urls.json`, JSON.stringify(urls));
           const min = (s) => ['error', { minScore: Number(s) }];
           fs.writeFileSync(`${e.RUNNER_TEMP}/lighthouserc.json`, JSON.stringify({
             ci: {
@@ -176,11 +168,55 @@ jobs:
           }, null, 2));
           JS
 
-      - name: Accessibility (pa11y-ci + axe)
+      - name: Accessibility (axe-core)
         if: inputs.a11y
+        working-directory: ${{ runner.temp }}
         env:
-          CONFIG: ${{ inputs.pa11y-config }}
-        run: npx --yes pa11y-ci@5.0.0 --threshold 0 --config "${CONFIG:-$RUNNER_TEMP/pa11yci.json}"
+          STANDARD: ${{ inputs.a11y-standard }}
+        run: |
+          npm install --no-save --no-audit --no-fund --loglevel=error puppeteer-core@25.11.0 axe-core@4.14.0
+          CHROME="$(command -v google-chrome || command -v chromium)" node <<'JS'
+          const fs = require('fs');
+          const puppeteer = require('puppeteer-core');
+          const axeSource = fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8');
+          const urls = JSON.parse(fs.readFileSync('urls.json', 'utf8'));
+          const level = { WCAG2A: ['a'], WCAG2AA: ['a', 'aa'], WCAG2AAA: ['a', 'aa', 'aaa'] }[process.env.STANDARD];
+          if (!level) throw new Error(`Unknown a11y-standard ${process.env.STANDARD}`);
+          const tags = level.flatMap((l) => [`wcag2${l}`, `wcag21${l}`, `wcag22${l}`]);
+          const viewports = [{ name: 'desktop', width: 1280, height: 1024 }, { name: 'phone', width: 390, height: 844 }];
+          (async () => {
+            const browser = await puppeteer.launch({ executablePath: process.env.CHROME, args: ['--no-sandbox'] });
+            let total = 0;
+            const lines = [];
+            for (const url of urls) {
+              for (const vp of viewports) {
+                const page = await browser.newPage();
+                await page.setViewport(vp);
+                await page.goto(url, { waitUntil: 'networkidle0', timeout: 60000 });
+                await page.addScriptTag({ content: axeSource });
+                const violations = await page.evaluate(
+                  (tags) => axe.run(document, { runOnly: { type: 'tag', values: tags } }).then((r) => r.violations),
+                  tags,
+                );
+                await page.close();
+                for (const v of violations) {
+                  for (const n of v.nodes) {
+                    total++;
+                    const detail = (n.any[0] || n.all[0] || n.none[0] || {}).message || v.help;
+                    console.log(`::error title=${v.id} (${vp.name})::${url} ${n.target.join(' ')}: ${detail}`);
+                  }
+                  lines.push(`| ${new URL(url).pathname} | ${vp.name} | [${v.id}](${v.helpUrl}) | ${v.nodes.length} |`);
+                }
+              }
+            }
+            await browser.close();
+            const summary = total
+              ? ['### Accessibility', '', `${total} WCAG violations.`, '', '| Page | Viewport | Rule | Elements |', '| --- | --- | --- | --- |', ...lines].join('\n')
+              : `### Accessibility\n\nNo WCAG violations on ${urls.length} pages at desktop and phone widths.`;
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary + '\n');
+            process.exit(total ? 1 : 0);
+          })().catch((e) => { console.error(e); process.exit(1); });
+          JS
 
       - name: Lighthouse
         if: inputs.lighthouse && !cancelled()

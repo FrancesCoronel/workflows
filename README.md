@@ -12,7 +12,7 @@ Each repo keeps a tiny caller file. The real logic lives here, so a fix in this 
 | [`ci-markdown.yml`](.github/workflows/ci-markdown.yml) | For docs and awesome-list repos. Runs markdownlint, then checks links with lychee. On PRs it only checks the files the PR touches, so a new link gets verified without old rot blocking it. |
 | [`dependabot-automerge.yml`](.github/workflows/dependabot-automerge.yml) | Runs only after CI passes. Squash-merges Dependabot patch and minor bumps. Major bumps get a `major-update` label and a comment, then wait for a human. |
 | [`coverage.yml`](.github/workflows/coverage.yml) | Runs `test:coverage` and reads the Istanbul `coverage-summary.json`. Fails below the `min` floor, and on PRs fails if lines, branches, functions or statements drop below the base branch. |
-| [`web-quality.yml`](.github/workflows/web-quality.yml) | Builds and starts a web app, then runs pa11y-ci with axe (zero WCAG 2 AA violations) and Lighthouse CI (performance 90+, accessibility, best practices and SEO 100). |
+| [`web-quality.yml`](.github/workflows/web-quality.yml) | Builds and starts a web app, then runs axe-core at desktop and phone widths (zero WCAG 2 AA violations) and Lighthouse CI (performance 90+, accessibility, best practices and SEO 100). |
 | [`security.yml`](.github/workflows/security.yml) | Dependency review on PRs (no new vulnerable deps at any severity), zizmor on the workflows, and gitleaks for committed secrets. |
 | [`ci-shell.yml`](.github/workflows/ci-shell.yml) | ShellCheck on every shell script, for dotfiles and install scripts. |
 | [`codeql.yml`](.github/workflows/codeql.yml) | CodeQL security scanning, with languages as an input. |
@@ -98,7 +98,7 @@ With no `test:coverage` script the job counts coverage as 0% and warns, so `min:
 | `port` | `3000` | |
 | `a11y` / `lighthouse` | `true` / `true` | |
 | `a11y-standard` | `WCAG2AA` | |
-| `pa11y-config` / `lighthouse-config` | `""` | Bring your own. A custom `lighthouserc.json` should leave out `startServerCommand`, since the server is already running |
+| `lighthouse-config` | `""` | Bring your own. A custom `lighthouserc.json` should leave out `startServerCommand`, since the server is already running |
 | `performance-min` | `0.9` | Scores on shared runners move a few points between runs, so 1.0 would flake |
 | `accessibility-min`, `best-practices-min`, `seo-min` | `1` | |
 
