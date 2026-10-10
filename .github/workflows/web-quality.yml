@@ -226,6 +226,34 @@ jobs:
         # since the server is already running
         run: npx --yes @lhci/cli@0.15.1 autorun --config="${CONFIG:-$RUNNER_TEMP/lighthouserc.json}"
 
+      - name: Lighthouse summary
+        if: inputs.lighthouse && !cancelled()
+        run: |
+          node <<'JS'
+          const fs = require('fs');
+          const dir = `${process.env.RUNNER_TEMP}/lhci`;
+          if (!fs.existsSync(`${dir}/manifest.json`)) process.exit(0);
+          const runs = JSON.parse(fs.readFileSync(`${dir}/manifest.json`, 'utf8')).filter((r) => r.isRepresentativeRun);
+          const pct = (n) => (n == null ? '–' : Math.round(n * 100));
+          const rows = runs.map((r) => {
+            const s = r.summary;
+            const line = `${new URL(r.url).pathname}: performance ${pct(s.performance)}, accessibility ${pct(s.accessibility)}, best practices ${pct(s['best-practices'])}, SEO ${pct(s.seo)}`;
+            console.log(`::notice title=Lighthouse::${line}`);
+            const report = JSON.parse(fs.readFileSync(r.jsonPath, 'utf8'));
+            // Name what cost points, so a failure is fixable from the summary alone
+            for (const cat of Object.values(report.categories)) {
+              if (cat.score === 1) continue;
+              const losses = cat.auditRefs
+                .filter((a) => a.weight > 0 && report.audits[a.id].score !== null && report.audits[a.id].score < 1)
+                .sort((a, b) => b.weight - a.weight).slice(0, 4)
+                .map((a) => `${a.id} ${report.audits[a.id].displayValue || pct(report.audits[a.id].score)}`);
+              if (losses.length) console.log(`::notice title=Lighthouse ${cat.id}::${new URL(r.url).pathname}: ${losses.join('; ')}`);
+            }
+            return `| ${new URL(r.url).pathname} | ${pct(s.performance)} | ${pct(s.accessibility)} | ${pct(s['best-practices'])} | ${pct(s.seo)} |`;
+          });
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, ['### Lighthouse', '', '| Page | Performance | Accessibility | Best practices | SEO |', '| --- | --- | --- | --- | --- |', ...rows, ''].join('\n'));
+          JS
+
       - name: Upload Lighthouse reports
         if: inputs.lighthouse && !cancelled()
         uses: actions/upload-artifact@v7
