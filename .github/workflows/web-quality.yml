@@ -1,0 +1,271 @@
+# Reusable accessibility and performance gate for web apps.
+#
+# Builds the app once, starts it, then runs:
+#   - axe-core: zero WCAG violations allowed on every listed page, at desktop
+#     and phone widths
+#   - Lighthouse CI: category scores must meet the minimums below
+# A repo can bring its own lighthouserc.json; otherwise it is generated
+# from `urls`.
+name: Web quality
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: Node version. Empty means use .nvmrc / .node-version if present, else 24
+        type: string
+        default: ""
+      working-directory:
+        type: string
+        default: "."
+      build-script:
+        description: package.json script that builds the app. Empty skips the build
+        type: string
+        default: build
+      start-script:
+        description: package.json script that serves the built app
+        type: string
+        default: start
+      port:
+        type: number
+        default: 3000
+      urls:
+        description: Paths to test, one per line
+        type: string
+        default: "/"
+      a11y:
+        description: Run axe-core
+        type: boolean
+        default: true
+      a11y-standard:
+        description: WCAG2A, WCAG2AA or WCAG2AAA
+        type: string
+        default: WCAG2AA
+      lighthouse:
+        description: Run Lighthouse CI
+        type: boolean
+        default: true
+      lighthouse-config:
+        description: Path to a lighthouserc.json (without startServerCommand). Empty generates one from urls and the minimums below
+        type: string
+        default: ""
+      performance-min:
+        description: Minimum Lighthouse performance score (0-1). Shared runners vary a few points run to run
+        type: number
+        default: 0.9
+      accessibility-min:
+        type: number
+        default: 1
+      best-practices-min:
+        type: number
+        default: 1
+      seo-min:
+        type: number
+        default: 1
+    secrets:
+      build-env:
+        description: Optional dotenv-style lines written to .env.local before the build
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  web-quality:
+    name: web-quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Detect package manager and Node version
+        id: pm
+        env:
+          NODE_INPUT: ${{ inputs.node-version }}
+          WD: ${{ inputs.working-directory }}
+        run: |
+          if [ -f pnpm-lock.yaml ]; then echo "pm=pnpm" >> "$GITHUB_OUTPUT"
+          elif [ -f yarn.lock ]; then echo "pm=yarn" >> "$GITHUB_OUTPUT"
+          else echo "pm=npm" >> "$GITHUB_OUTPUT"; fi
+          if [ -n "$NODE_INPUT" ]; then echo "node=$NODE_INPUT" >> "$GITHUB_OUTPUT"
+          elif [ -f .nvmrc ]; then echo "node-file=$WD/.nvmrc" >> "$GITHUB_OUTPUT"
+          elif [ -f .node-version ]; then echo "node-file=$WD/.node-version" >> "$GITHUB_OUTPUT"
+          else echo "node=24" >> "$GITHUB_OUTPUT"; fi
+
+      - if: steps.pm.outputs.pm == 'pnpm'
+        uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          package_json_file: ${{ inputs.working-directory }}/package.json
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ steps.pm.outputs.node }}
+          node-version-file: ${{ steps.pm.outputs.node-file }}
+          cache: ${{ steps.pm.outputs.pm }}
+          cache-dependency-path: ${{ inputs.working-directory }}/${{ steps.pm.outputs.pm == 'pnpm' && 'pnpm-lock.yaml' || steps.pm.outputs.pm == 'yarn' && 'yarn.lock' || 'package-lock.json' }}
+
+      - name: Install
+        env:
+          PM: ${{ steps.pm.outputs.pm }}
+        run: |
+          case "$PM" in pnpm) pnpm install --frozen-lockfile ;; yarn) yarn install --frozen-lockfile ;; npm) npm ci ;; esac
+
+      - name: Build
+        if: inputs.build-script != ''
+        env:
+          PM: ${{ steps.pm.outputs.pm }}
+          SCRIPT: ${{ inputs.build-script }}
+          BUILD_ENV: ${{ secrets.build-env }}
+        run: |
+          if [ -n "$BUILD_ENV" ]; then printf '%s\n' "$BUILD_ENV" > .env.local; fi
+          "$PM" run "$SCRIPT"
+
+      - name: Start
+        env:
+          PM: ${{ steps.pm.outputs.pm }}
+          SCRIPT: ${{ inputs.start-script }}
+          PORT: ${{ inputs.port }}
+        run: |
+          nohup "$PM" run "$SCRIPT" > "$RUNNER_TEMP/server.log" 2>&1 &
+          for _ in $(seq 60); do
+            curl -fsS -o /dev/null "http://localhost:$PORT/" && exit 0
+            sleep 2
+          done
+          echo "::error::Server didn't answer on port $PORT within 2 minutes"; cat "$RUNNER_TEMP/server.log"; exit 1
+
+      - name: Write configs
+        env:
+          URLS: ${{ inputs.urls }}
+          PORT: ${{ inputs.port }}
+          PERF: ${{ inputs.performance-min }}
+          A11Y: ${{ inputs.accessibility-min }}
+          BP: ${{ inputs.best-practices-min }}
+          SEO: ${{ inputs.seo-min }}
+        run: |
+          node <<'JS'
+          const fs = require('fs');
+          const e = process.env;
+          const urls = e.URLS.split('\n').map((s) => s.trim()).filter(Boolean)
+            .map((p) => (p.startsWith('http') ? p : `http://localhost:${e.PORT}${p.startsWith('/') ? '' : '/'}${p}`));
+          fs.writeFileSync(`${e.RUNNER_TEMP}/urls.json`, JSON.stringify(urls));
+          const min = (s) => ['error', { minScore: Number(s) }];
+          fs.writeFileSync(`${e.RUNNER_TEMP}/lighthouserc.json`, JSON.stringify({
+            ci: {
+              collect: { url: urls, numberOfRuns: 3, settings: { chromeFlags: '--no-sandbox' } },
+              assert: { assertions: {
+                'categories:performance': min(e.PERF),
+                'categories:accessibility': min(e.A11Y),
+                'categories:best-practices': min(e.BP),
+                'categories:seo': min(e.SEO),
+              } },
+              upload: { target: 'filesystem', outputDir: `${e.RUNNER_TEMP}/lhci` },
+            },
+          }, null, 2));
+          JS
+
+      - name: Accessibility (axe-core)
+        if: inputs.a11y
+        working-directory: ${{ runner.temp }}
+        env:
+          STANDARD: ${{ inputs.a11y-standard }}
+        run: |
+          npm install --no-save --no-audit --no-fund --loglevel=error puppeteer-core@25.11.0 axe-core@4.14.0
+          CHROME="$(command -v google-chrome || command -v chromium)" node <<'JS'
+          const fs = require('fs');
+          const puppeteer = require('puppeteer-core');
+          const axeSource = fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8');
+          const urls = JSON.parse(fs.readFileSync('urls.json', 'utf8'));
+          const level = { WCAG2A: ['a'], WCAG2AA: ['a', 'aa'], WCAG2AAA: ['a', 'aa', 'aaa'] }[process.env.STANDARD];
+          if (!level) throw new Error(`Unknown a11y-standard ${process.env.STANDARD}`);
+          const tags = level.flatMap((l) => [`wcag2${l}`, `wcag21${l}`, `wcag22${l}`]);
+          const viewports = [{ name: 'desktop', width: 1280, height: 1024 }, { name: 'phone', width: 390, height: 844 }];
+          (async () => {
+            const browser = await puppeteer.launch({ executablePath: process.env.CHROME, args: ['--no-sandbox'] });
+            let total = 0;
+            const lines = [];
+            for (const url of urls) {
+              for (const vp of viewports) {
+                const page = await browser.newPage();
+                await page.setViewport(vp);
+                await page.goto(url, { waitUntil: 'networkidle0', timeout: 60000 });
+                await page.addScriptTag({ content: axeSource });
+                const violations = await page.evaluate(
+                  (tags) => axe.run(document, { runOnly: { type: 'tag', values: tags } }).then((r) => r.violations),
+                  tags,
+                );
+                await page.close();
+                for (const v of violations) {
+                  for (const n of v.nodes) {
+                    total++;
+                    const detail = (n.any[0] || n.all[0] || n.none[0] || {}).message || v.help;
+                    console.log(`::error title=${v.id} (${vp.name})::${url} ${n.target.join(' ')}: ${detail}`);
+                  }
+                  lines.push(`| ${new URL(url).pathname} | ${vp.name} | [${v.id}](${v.helpUrl}) | ${v.nodes.length} |`);
+                }
+              }
+            }
+            await browser.close();
+            const summary = total
+              ? ['### Accessibility', '', `${total} WCAG violations.`, '', '| Page | Viewport | Rule | Elements |', '| --- | --- | --- | --- |', ...lines].join('\n')
+              : `### Accessibility\n\nNo WCAG violations on ${urls.length} pages at desktop and phone widths.`;
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, summary + '\n');
+            process.exit(total ? 1 : 0);
+          })().catch((e) => { console.error(e); process.exit(1); });
+          JS
+
+      - name: Lighthouse
+        if: inputs.lighthouse && !cancelled()
+        env:
+          CONFIG: ${{ inputs.lighthouse-config }}
+        # A bring-your-own lighthouserc.json should leave out startServerCommand,
+        # since the server is already running
+        run: npx --yes @lhci/cli@0.15.1 autorun --config="${CONFIG:-$RUNNER_TEMP/lighthouserc.json}"
+
+      - name: Lighthouse summary
+        if: inputs.lighthouse && !cancelled()
+        run: |
+          node <<'JS'
+          const fs = require('fs');
+          const dir = `${process.env.RUNNER_TEMP}/lhci`;
+          if (!fs.existsSync(`${dir}/manifest.json`)) process.exit(0);
+          const runs = JSON.parse(fs.readFileSync(`${dir}/manifest.json`, 'utf8')).filter((r) => r.isRepresentativeRun);
+          const pct = (n) => (n == null ? '–' : Math.round(n * 100));
+          // GitHub keeps 10 annotations per step, so group them: one for scores, one per category that lost points
+          const scores = [];
+          const losses = {};
+          const rows = runs.map((r) => {
+            const s = r.summary;
+            const page = new URL(r.url).pathname;
+            scores.push(`${page}: performance ${pct(s.performance)}, accessibility ${pct(s.accessibility)}, best practices ${pct(s['best-practices'])}, SEO ${pct(s.seo)}`);
+            const report = JSON.parse(fs.readFileSync(r.jsonPath, 'utf8'));
+            // Name what cost points, so a failure is fixable from the annotations alone
+            for (const cat of Object.values(report.categories)) {
+              if (cat.score === 1) continue;
+              const top = cat.auditRefs
+                .filter((a) => a.weight > 0 && report.audits[a.id].score !== null && report.audits[a.id].score < 1)
+                .sort((a, b) => b.weight - a.weight).slice(0, 4)
+                .map((a) => `${a.id} ${report.audits[a.id].displayValue || pct(report.audits[a.id].score)}`);
+              if (top.length) (losses[cat.id] ||= []).push(`${page}: ${top.join('; ')}`);
+            }
+            return `| ${page} | ${pct(s.performance)} | ${pct(s.accessibility)} | ${pct(s['best-practices'])} | ${pct(s.seo)} |`;
+          });
+          const annotate = (title, lines) => console.log(`::notice title=${title}::${lines.join('%0A')}`);
+          if (scores.length) annotate('Lighthouse scores', scores);
+          for (const [cat, lines] of Object.entries(losses)) annotate(`Lighthouse ${cat}`, lines);
+          fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, ['### Lighthouse', '', '| Page | Performance | Accessibility | Best practices | SEO |', '| --- | --- | --- | --- | --- |', ...rows, ''].join('\n'));
+          JS
+
+      - name: Upload Lighthouse reports
+        if: inputs.lighthouse && !cancelled()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lighthouse
+          path: |
+            ${{ inputs.working-directory }}/.lighthouseci
+            ${{ runner.temp }}/lhci
+          if-no-files-found: ignore

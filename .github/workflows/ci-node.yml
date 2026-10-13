@@ -54,14 +54,15 @@ jobs:
         id: pm
         env:
           NODE_INPUT: ${{ inputs.node-version }}
+          WD: ${{ inputs.working-directory }}
         run: |
           # pnpm wins over a stray package-lock.json
           if [ -f pnpm-lock.yaml ]; then echo "pm=pnpm" >> "$GITHUB_OUTPUT"
           elif [ -f yarn.lock ]; then echo "pm=yarn" >> "$GITHUB_OUTPUT"
           else echo "pm=npm" >> "$GITHUB_OUTPUT"; fi
           if [ -n "$NODE_INPUT" ]; then echo "node=$NODE_INPUT" >> "$GITHUB_OUTPUT"
-          elif [ -f .nvmrc ]; then echo "node-file=${{ inputs.working-directory }}/.nvmrc" >> "$GITHUB_OUTPUT"
-          elif [ -f .node-version ]; then echo "node-file=${{ inputs.working-directory }}/.node-version" >> "$GITHUB_OUTPUT"
+          elif [ -f .nvmrc ]; then echo "node-file=$WD/.nvmrc" >> "$GITHUB_OUTPUT"
+          elif [ -f .node-version ]; then echo "node-file=$WD/.node-version" >> "$GITHUB_OUTPUT"
           else echo "node=24" >> "$GITHUB_OUTPUT"; fi
 
       - if: steps.pm.outputs.pm == 'pnpm'

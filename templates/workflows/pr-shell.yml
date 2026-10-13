@@ -1,0 +1,21 @@
+# Copy into <repo>/.github/workflows/pr.yml for shell-script repos (dotfiles)
+name: PR
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    uses: FrancesCoronel/workflows/.github/workflows/ci-shell.yml@v1
+
+  security:
+    uses: FrancesCoronel/workflows/.github/workflows/security.yml@v1
