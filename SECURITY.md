@@ -2,7 +2,7 @@
 
 ## Supported Versions
 
-Only the latest `v1` tag (the tip of `main`) is maintained.
+Only the latest `v1` tag is maintained. Changes land on `main` first and reach callers once `v1` moves.
 
 ## Reporting a Vulnerability
 
