@@ -1,0 +1,27 @@
+name: Report a problem
+description: A workflow failed, skipped a check, or behaved differently from the README 🛠️
+title: "Problem: "
+labels: ["bug"]
+body:
+  - type: input
+    id: workflow
+    attributes:
+      label: Which workflow?
+      placeholder: ci-node.yml
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Paste the failing step's output if there is one, and link the run if it's public.
+    validations:
+      required: true
+  - type: textarea
+    id: caller
+    attributes:
+      label: How do you call it?
+      description: The `uses:` line and any `with:` inputs from your caller file.
+      render: yaml
+    validations:
+      required: false
