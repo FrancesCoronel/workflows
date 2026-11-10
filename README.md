@@ -149,3 +149,15 @@ Coverage, accessibility and performance don't apply to Markdown and shell repos,
 - **Callers pin to `@v1`.** Changes land on `main` first. Once they look good, push `main` to the `release` branch (`git push origin main:release`) or run the [Move v1 tag](.github/workflows/tag.yml) workflow by hand, and every repo picks them up on its next run. Breaking changes get a new `v2` tag instead.
 - **Third-party actions are pinned to commit SHAs** (with the version in a comment). Dependabot bumps them monthly in one grouped PR.
 - **This repo lints itself.** [`lint.yml`](.github/workflows/lint.yml) runs actionlint on the workflows and templates, and Dependabot keeps the actions here up to date.
+
+## Contributing
+
+Fixes and hardening are welcome. See the [contributing guide](.github/CONTRIBUTING.md) and the [code of conduct](.github/CODE_OF_CONDUCT.md).
+
+## Security
+
+See the [security policy](SECURITY.md) for how to report a vulnerability.
+
+## License
+
+[MIT](LICENSE)
